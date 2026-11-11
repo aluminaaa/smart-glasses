@@ -1,1 +1,59 @@
+# --- C. POSE & ANGLE ANALYSIS ---
+    pose_result = pose_landmarker.detect(mp_image)
+    pose_flag = False
 
+    if pose_result.pose_landmarks:
+        for pose_landmarks in pose_result.pose_landmarks:
+            def get_coords(idx):
+                lm = pose_landmarks[idx]
+                return np.array([int(lm.x * w), int(lm.y * h)])
+
+            l_shoulder, r_shoulder = get_coords(11), get_coords(12)
+            l_elbow, r_elbow = get_coords(13), get_coords(14)
+            l_wrist, r_wrist = get_coords(15), get_coords(16)
+            nose = get_coords(0)
+
+            l_arm_angle = calculate_angle(l_shoulder, l_elbow, l_wrist)
+            r_arm_angle = calculate_angle(r_shoulder, r_elbow, r_wrist)
+
+            # Draw joints
+            for p in [l_wrist, r_wrist, l_elbow, r_elbow, nose]:
+                cv2.circle(frame, tuple(p), 4, (255, 0, 0), -1)
+
+            # Raised arm condition
+            l_raised = l_wrist[1] < l_shoulder[1] and l_arm_angle < 120
+            r_raised = r_wrist[1] < r_shoulder[1] and r_arm_angle < 120
+
+            if l_raised or r_raised:
+                pose_flag = True
+                risk_score += WEIGHT_POSE
+
+    # --- D. THREAT EVALUATION & LOGGING ---
+    if risk_score >= 70:
+        status_text = f"HIGH CAMERA THREAT ({risk_score}%)"
+        status_color = (0, 0, 255)
+    elif risk_score >= 40:
+        status_text = f"MODERATE THREAT ({risk_score}%)"
+        status_color = (0, 255, 255)
+    else:
+        status_text = f"System Monitoring ({risk_score}%)"
+        status_color = (0, 255, 0)
+
+    cv2.putText(frame, status_text, (20, 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+
+    # Terminal Print Logging (every 15 frames to avoid cluttering output)
+    if frame_count % 15 == 0 and risk_score > 0:
+        print(f"[ALERT] Threat Level: {risk_score}% | Factors: "
+              f"Glint={glint_detected}, "
+              f"Targets={detected_target_names}, "
+              f"Suspicious Pose={pose_flag}")
+
+    cv2.imshow("Smart Glasses - Camera Detector", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        print("[INFO] Exiting application...")
+        break
+
+cap.release()
+cv2.destroyAllWindows()
