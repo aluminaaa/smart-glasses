@@ -1,52 +1,22 @@
-import cv2
-import numpy as np
-import tflite_runtime.interpreter as tflite
-
-# --- 1. LENS GLINT DETECTOR (Pure OpenCV) ---
-def detect_lens_glint(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    glints = []
-    for cnt in contours:
-        if 5 < cv2.contourArea(cnt) < 150:
-            glints.append(cv2.boundingRect(cnt))
-    return glints
-
-# --- 2. LOAD TFLITE INTERPRETERS ---
-# Load Object Detector (MobileNet SSDLite)
-obj_interpreter = tflite.Interpreter(model_path="mobilenet_v2.tflite")
-obj_interpreter.allocate_tensors()
-obj_input = obj_interpreter.get_input_details()
-obj_output = obj_interpreter.get_output_details()
-
-# Load Pose Detector (MoveNet)
-pose_interpreter = tflite.Interpreter(model_path="movenet_lightning.tflite")
-pose_interpreter.allocate_tensors()
-pose_input = pose_interpreter.get_input_details()
-pose_output = pose_interpreter.get_output_details()
-
-# COCO label 77 is 'cell phone'
-CELL_PHONE_CLASS_ID = 77
-
-# --- 3. MAIN CAMERA LOOP ---
-cap = cv2.VideoCapture(0)
-
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
     h, w, _ = frame.shape
+    detections = []
 
     # --- FEATURE A: Optical Glint ---
-    for (gx, gy, gw, gh) in detect_lens_glint(frame):
+    glints = detect_lens_glint(frame)
+    for (gx, gy, gw, gh) in glints:
         cv2.rectangle(frame, (gx, gy), (gx + gw, gy + gh), (0, 255, 255), 2)
         cv2.putText(frame, "GLINT", (gx, gy - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    if len(glints) > 0:
+        detections.append(f"{len(glints)} glint(s)")
 
     # --- FEATURE B: Object Detection (Cell Phone) ---
     img_obj = cv2.resize(frame, (300, 300))
-    input_data_obj = np.expand_dims(img_obj, axis=0)
+    input_data_obj = np.expand_dims(img_obj, axis=0).astype(np.uint8)
     obj_interpreter.set_tensor(obj_input[0]['index'], input_data_obj)
     obj_interpreter.invoke()
 
@@ -54,31 +24,36 @@ while cap.isOpened():
     classes = obj_interpreter.get_tensor(obj_output[1]['index'])[0]
     scores = obj_interpreter.get_tensor(obj_output[2]['index'])[0]
 
+    phones_found = 0
     for i in range(len(scores)):
         if scores[i] > 0.5 and int(classes[i]) == CELL_PHONE_CLASS_ID:
+            phones_found += 1
             ymin, xmin, ymax, xmax = boxes[i]
             bx, by, bw, bh = int(xmin * w), int(ymin * h), int((xmax - xmin) * w), int((ymax - ymin) * h)
             cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
             cv2.putText(frame, "CELL PHONE", (bx, by - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    if phones_found > 0:
+        detections.append(f"{phones_found} cell phone(s)")
 
     # --- FEATURE C: Pose Keypoints (MoveNet) ---
     img_pose = cv2.resize(frame, (192, 192))
-    input_data_pose = np.expand_dims(img_pose, axis=0).astype(np.int32)
+    input_data_pose = np.expand_dims(img_pose, axis=0).astype(np.uint8)
     pose_interpreter.set_tensor(pose_input[0]['index'], input_data_pose)
     pose_interpreter.invoke()
 
     keypoints = pose_interpreter.get_tensor(pose_output[0]['index'])[0][0]
+    valid_kps = 0
     for kp in keypoints:
         ky, kx, score = kp
         if score > 0.3:
+            valid_kps += 1
             cv2.circle(frame, (int(kx * w), int(ky * h)), 4, (0, 0, 255), -1)
+    if valid_kps > 0:
+        detections.append(f"Pose ({valid_kps}/17 keypoints)")
 
-    cv2.imshow("Smart Glasses Vision", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    # Print summary to SSH terminal and save annotated frame
+    if detections:
+        print("Detected: " + " | ".join(detections))
+    cv2.imwrite("latest_frame.jpg", frame)
 
 cap.release()
-cv2.destroyAllWindows()
-
-
-
